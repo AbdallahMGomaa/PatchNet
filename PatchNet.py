@@ -1,38 +1,43 @@
-import imp
-from sqlalchemy import outparam
+import torch
 import torch.nn as nn
-from torch import device, cuda
+import torch.nn.functional as F
+from lossFunction import AsymAdditiveMarginSoftmax
+from torchvision.models import resnet18
+
 from torchvision.models.resnet import resnet18
 
 class SiameseNetwork(nn.Module):
     def __init__(self):
-        super(SiameseNetwork,self).__init__()
-        self.model = resnet18(pretrained=True,progress=True)
+        super(SiameseNetwork, self).__init__()
+        self.encoder = resnet18(pretrained=True)
+        self.encoder.requires_grad = False
+        self.encoder.fc = nn.Sequential()
+        self.ams = AsymAdditiveMarginSoftmax(512,9)
+    def forward_once(self,input,labels):
+        f = self.encoder(input)
+        out, loss = self.ams(f,labels)
+        return out, f, loss
+    
+    def forward(self, input1, input2,labels):
+        out1, f1, loss1 = self.forward_once(input1,labels)
+        out2, f2, loss2 = self.forward_once(input2,labels)
+        f1_norm = F.normalize(f1,p=2,dim=1)
+        f2_norm = F.normalize(f2,p=2,dim=1)
+        loss =  loss1 + loss2 + torch.mean(torch.norm(f1_norm-f2_norm))
+        return out1, out2, loss
         
-        num_features = self.model.fc.in_features
-        self.model.fc = nn.Linear(num_features,9)
-    def forward_once(self,x):
-        output = self.model(x)
-        return output
-    def forward(self,input1,input2):
-        output1 = self.model(input1)
-        output2 = self.model(input2)
-        return output1, output2
+class PatchNet(nn.Module):
+    def __init__(self):
+        super(PatchNet,self).__init__()
+        self.encoder = resnet18()
+        self.encoder.fc = nn.Sequential()
+        self.fc = nn.Linear(512,9, bias=False)
+    def forward(self,x):
+        x = self.encoder(x)
+        self.fc.weight.data = F.normalize(self.fc.weight.data, p=2, dim=1) 
 
+        x = F.normalize(x, p=2, dim=1)
 
-
-net = SiameseNetwork()
-first_parameter = next(net.parameters())
-input_shape = first_parameter.size()
-print(net)
-from PIL import Image
-x1 = Image.open('D:\\university\GP\\PatchNet\\train\\1\\frame1_47.jpg')
-x2 = Image.open('D:\\university\GP\\PatchNet\\train\\1\\frame1_15.jpg')
-import torchvision.transforms as transforms
-transform = transforms.ToTensor()
-x1 = transform(x1).unsqueeze(0)
-x2 = transform(x2).unsqueeze(0)
-
-y1,y2 = net.forward(x1,x2)
-
-print(y1.dist(y2))
+        wf = self.fc(x)
+        x = F.softmax(30 * wf)
+        return x
